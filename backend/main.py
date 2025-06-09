@@ -46,7 +46,7 @@ def read_root():
 async def redoc_html():
     return get_redoc_html(openapi_url="/openapi.json", title="API docs")
 
-# ===============================
+# ==============================
 # 1. Generate Quiz from PDF
 # ===============================
 @app.post("/generate_quiz", response_model=Quiz, tags=["Quiz Generation"])
