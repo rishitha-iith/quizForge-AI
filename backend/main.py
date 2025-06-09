@@ -12,6 +12,11 @@ from ai_code.question import Question
 from ai_code.quiz import Quiz, generate_mcq_questions, parse_questions, shuffle_questions_for_user
 from ai_code.userresponse import UserResponse
 
+if __name__ == "__main__":
+    import uvicorn
+    port = int(os.environ.get("PORT", 8000))
+    uvicorn.run("main:app", host="0.0.0.0", port=port)
+
 # Load environment variables from .env
 load_dotenv()
 openai_api_key = os.getenv("OPENAI_API_KEY")
@@ -54,9 +59,8 @@ async def generate_quiz_endpoint(
     """
     Upload a PDF file and generate multiple-choice questions.
     """
-    print("Route hit!")
+    print("✅ Route hit!")
 
-    # ---------- validation ----------
     if not pdf_file.filename.lower().endswith(".pdf"):
         raise HTTPException(status_code=400, detail="Only PDF files are allowed.")
 
@@ -66,51 +70,44 @@ async def generate_quiz_endpoint(
     if num_users_input <= 0:
         raise HTTPException(status_code=422, detail="Number of users must be greater than zero.")
 
-    # ---------- main processing ----------
     try:
-        # 1. Read the uploaded PDF
+        # Read the uploaded PDF
         pdf_content = await pdf_file.read()
 
-        # 2. Extract text from PDF
+        # Extract text
         try:
             with fitz.open(stream=pdf_content, filetype="pdf") as doc:
                 text = "".join(page.get_text() for page in doc)
+            print("✅ PDF text extracted successfully.")
         except Exception as e:
-            raise HTTPException(
-                status_code=422,
-                detail="Failed to parse PDF content."
-            ) from e
+            print("❌ PDF parsing error:", str(e))
+            raise HTTPException(status_code=422, detail="Failed to parse PDF content.")
 
-        # 3. Generate and parse questions via LLM
+        # Generate questions using OpenAI
         try:
+            print("🧠 Sending to OpenAI...")
             raw_quiz_text = generate_mcq_questions(text, num_questions)
+            print("✅ Raw quiz text received:")
+            print(raw_quiz_text)
             questions = parse_questions(raw_quiz_text)
         except Exception as e:
-            raise HTTPException(
-                status_code=500,
-                detail="AI failed to generate or format questions."
-            ) from e
+            print("❌ OpenAI error:", str(e))
+            raise HTTPException(status_code=500, detail="AI failed to generate or format questions.")
 
-        # 4. Update global user count
+        # Set user count globally
         global num_users
         num_users = num_users_input
 
-        # 5. Return the Quiz model
         return Quiz(
             title=pdf_file.filename.replace(".pdf", "").title() + " Quiz",
             questions=questions
         )
 
-    # ---------- generic fallbacks ----------
     except HTTPException:
-        # Let FastAPI handle already-raised HTTPExceptions
         raise
     except Exception as e:
-        # Anything unanticipated bubbles up as a 500
-        raise HTTPException(
-            status_code=500,
-            detail=f"Unexpected server error: {str(e)}"
-        )
+        print("❌ Unexpected error:", str(e))
+        raise HTTPException(status_code=500, detail=f"Unexpected server error: {str(e)}")
 
 
 
