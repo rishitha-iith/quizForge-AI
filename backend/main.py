@@ -5,7 +5,7 @@ from typing import List, Dict, Annotated
 from dotenv import load_dotenv
 from openai import OpenAI
 import os
-import fitz  # PyMuPDF
+import fitz  # PyMuPDf
 import json
 import re
 
