@@ -7,3 +7,4 @@ accelerate
 PyMuPDF
 python-dotenv
 python-multipart
+replicate
