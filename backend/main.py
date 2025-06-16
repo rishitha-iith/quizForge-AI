@@ -1,209 +1,221 @@
-from fastapi import FastAPI, HTTPException, UploadFile, File, Form, Request
-from fastapi.openapi.docs import get_redoc_html
-from pydantic import BaseModel
-from typing import List, Dict, Annotated
-from dotenv import load_dotenv
-from openai import OpenAI
-import os
-import fitz  # PyMuPDf
+# main.py
+from fastapi import FastAPI, UploadFile, File, Form, HTTPException
+from fastapi.middleware.cors import CORSMiddleware
+from pydantic import BaseModel, EmailStr
+from typing import List, Dict
+from sqlmodel import SQLModel, create_engine, Session, select
+from uuid import uuid4
+import fitz  # PyMuPDF
 import json
+import requests
 import re
+import os
+from datetime import datetime
+from dotenv import load_dotenv
 
-# Local modules
-from ai_code.question import Question
-from ai_code.quiz import Quiz, parse_questions, shuffle_questions_for_user
-from ai_code.userresponse import UserResponse
+from models import User, QuizResult, QuestionModel
+from database import get_session, create_db_and_tables
+from utils import hash_password, verify_password
 
-# Load environment variables
+load_dotenv()
 
-# Initialize FastAPI app
-app = FastAPI(
-    title="AI PDF Quiz Generator",
-    description="Generate MCQ quizzes from PDFs and manage multi-user quizzes with scoring and leaderboard.",
-    version="1.0.0"
+app = FastAPI()
+
+app.add_middleware(
+    CORSMiddleware,
+    allow_origins=["http://localhost:5173", "http://127.0.0.1:5173"],
+    allow_credentials=True,
+    allow_methods=["*"],
+    allow_headers=["*"],
 )
 
-# Initialize OpenRouter client
-client = OpenAI(
-    base_url="https://openrouter.ai/api/v1",
-    api_key="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",
-)
-print("API Key",client.api_key)
+@app.on_event("startup")
+def on_startup():
+    create_db_and_tables()
 
-# Global state
-user_quizzes: Dict[str, List[Question]] = {}
-user_results: List[Dict] = []
-num_users: int = 5  # default
+# ----------- MODELS ------------
+class SignupRequest(BaseModel):
+    username: str
+    email: EmailStr
+    password: str
 
+class LoginRequest(BaseModel):
+    email: EmailStr
+    password: str
 
+class Question(BaseModel):
+    question: str
+    options: List[str]
+    correct_index: int
 
-@app.get("/")
-def read_root():
-    return {"message": "Welcome to the AI Quiz API!"}
+class Quiz(BaseModel):
+    title: str
+    questions: List[Question]
 
+class UserResponse(BaseModel):
+    user_id: str
+    quiz_id: int
+    answers: Dict[int, str]
+    time_taken: int
 
-@app.get("/redocs", include_in_schema=False)
-async def redoc_html():
-    return get_redoc_html(openapi_url="/openapi.json", title="API docs")
+# ---------- AUTH API ----------
+@app.post("/signup")
+def signup(user: SignupRequest):
+    session = get_session()
+    existing_user = session.exec(select(User).where(User.email == user.email)).first()
+    if existing_user:
+        raise HTTPException(status_code=400, detail="Email already exists")
 
+    new_user = User(
+        user_id=str(uuid4()),
+        username=user.username,
+        email=user.email,
+        password=hash_password(user.password)
+    )
+    session.add(new_user)
+    session.commit()
+    session.refresh(new_user)
 
-# ========================================
-# 1. Generate Quiz from PDF
-# ========================================
-@app.post("/generate_quiz", response_model=Quiz, tags=["Quiz Generation"])
-async def generate_quiz_endpoint(
-    request: Request,
-    num_questions: Annotated[int, Form(description="Number of MCQs to generate")],
-    num_users_input: Annotated[int, Form(...)],
+    return {"user_id": new_user.user_id}
+
+@app.post("/login")
+def login(identifier: str = Form(...), password: str = Form(...)):
+    session = get_session()
+    user = session.exec(select(User).where((User.email == identifier) | (User.username == identifier))).first()
+    if not user or not verify_password(password, user.password):
+        raise HTTPException(status_code=401, detail="Invalid credentials")
+    return {"user_id": user.user_id, "username": user.username}
+
+# ---------- QUIZ GENERATION ----------
+@app.post("/generate_quiz", response_model=Quiz)
+async def generate_quiz(
+    user_id: str = Form(...),
+    num_questions: int = Form(...),
+    num_users: int = Form(...),
     pdf_file: UploadFile = File(...)
 ):
+    if not pdf_file.filename.endswith(".pdf"):
+        raise HTTPException(status_code=400, detail="Upload a PDF file.")
+
+    content = await pdf_file.read()
+    doc = fitz.open(stream=content, filetype="pdf")
+    text = "".join([page.get_text() for page in doc])
+
+    prompt = f"""
+    Generate {num_questions} multiple-choice questions from the following text.
+    Each must have 4 options and a correct_option (0-based index).
+    Return a pure JSON array like:
+    [{{"question": "...", "options": ["A", "B", "C", "D"], "correct_option": 2}}, ...]
+    Text: {text[:3000]}
     """
-    Upload a PDF and generate MCQs using OpenRouter DeepSeek model.
-    """
-    if not pdf_file.filename.lower().endswith(".pdf"):
-        raise HTTPException(status_code=400, detail="Only PDF files are allowed.")
-    if num_questions <= 0:
-        raise HTTPException(status_code=422, detail="Number of questions must be greater than zero.")
-    if num_users_input <= 0:
-        raise HTTPException(status_code=422, detail="Number of users must be greater than zero.")
 
-    try:
-        pdf_content = await pdf_file.read()
-        print(f"Received PDF file: {pdf_file.filename} ({len(pdf_content)} bytes)")
-
-        # Extract text
-        try:
-            with fitz.open(stream=pdf_content, filetype="pdf") as doc:
-                text = "".join(page.get_text() for page in doc)
-        except Exception as e:
-            raise HTTPException(status_code=422, detail="Failed to parse PDF content.") from e
-
-        # Create prompt
-        prompt = (
-            f"Generate {num_questions} multiple-choice questions from the following text.\n"
-            f"Each question should have 4 options and a correct_option (0-based index).\n"
-            f"Return the result in JSON list format like:\n"
-            f"Return only raw JSON (no markdown, no explanation). Do NOT wrap it in ```json``` or any backticks."
-            f"[{{'question': '...', 'options': ['A', 'B', 'C', 'D'], 'correct_option': 2}}, ...]\n\n"
-            f"Text:\n{text[:3000]}"
-        )
-
-        # Call OpenRouter LLM
-        try:
-            response = client.chat.completions.create(
-                model="deepseek/deepseek-r1-0528-qwen3-8b:free",
-                messages=[{"role": "user", "content": prompt}],
-                extra_headers={
-                    "HTTP-Referer": "https://quizforge-ai.onrender.com",
-                    "X-Title": "QuizForge AI"
-                }
-            )
-            raw_output = response.choices[0].message.content.strip()
-
-            # Remove triple backticks and optional `json` label
-            match = re.search(r"```(?:json)?\s*(.*?)```", raw_output, re.DOTALL)
-            if match:
-                raw_output = match.group(1).strip()
-
-            print("=== CLEANED OUTPUT ===")
-            print(raw_output)
-
-            # Try to parse
-            parsed = json.loads(raw_output)
-            questions = [Question(question=q['question'], options=q['options'], correct_index=q['correct_option']) for q in parsed]
-        except Exception as e:
-            raise HTTPException(status_code=500, detail=f"LLM error or bad JSON: {str(e)}")
-
-        # Update user count
-        global num_users
-        num_users = num_users_input
-        print("PDF Text Preview:\n", text[:1000])
-        # Return quiz
-        return Quiz(
-            title=pdf_file.filename.replace(".pdf", "").title() + " Quiz",
-            questions=questions
-        )
-
-    except HTTPException:
-        raise
-    except Exception as e:
-        raise HTTPException(status_code=500, detail=f"Unexpected error: {str(e)}")
-
-
-# ========================================
-# 2. Start User Quiz
-# ========================================
-@app.post("/start_user_quiz/{user_id}", tags=["User Quiz Session"])
-async def start_user_quiz_endpoint(user_id: str, quiz: Quiz):
-    """
-    Shuffle and assign quiz questions to a user.
-    """
-    user_quizzes[user_id] = shuffle_questions_for_user(quiz.questions)
-    return {"message": f"Quiz started for user {user_id}"}
-
-
-# ========================================
-# 3. Get Quiz for a User
-# ========================================
-@app.get("/get_user_quiz/{user_id}", response_model=List[Question], tags=["User Quiz Session"])
-async def get_user_quiz_endpoint(user_id: str):
-    """
-    Get quiz questions assigned to a user.
-    """
-    if user_id not in user_quizzes:
-        raise HTTPException(status_code=404, detail=f"No quiz found for user {user_id}")
-    return user_quizzes[user_id]
-
-
-# ========================================
-# 4. Submit Answers and Score
-# ========================================
-@app.post("/submit_user_answers/{user_id}", response_model=UserResponse, tags=["User Responses"])
-async def submit_user_answers_endpoint(user_id: str, answers: Dict[int, str]):
-    """
-    Submit answers and receive score and metadata.
-    """
-    if user_id not in user_quizzes:
-        raise HTTPException(status_code=404, detail=f"No quiz found for user {user_id}")
-
-    quiz = user_quizzes[user_id]
-    score = 0
-
-    for i, user_ans in answers.items():
-        if 0 <= i < len(quiz):
-            correct_letter = chr(65 + quiz[i].correct_index)
-            if user_ans.upper() == correct_letter:
-                score += 1
-
-    time_taken = 0  # You can add logic to track this in future
-
-    # Save/overwrite result
-    existing = next((r for r in user_results if r["user_id"] == user_id), None)
-    if existing:
-        existing["score"] = score
-        existing["time_taken"] = time_taken
-    else:
-        user_results.append({
-            "user_id": user_id,
-            "score": score,
-            "time_taken": time_taken
+    response = requests.post(
+        "https://openrouter.ai/api/v1/chat/completions",
+        headers={
+            "Authorization": f"Bearer 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",
+            "Content-Type": "application/json",
+            "HTTP-Referer": "https://quizforge-ai.onrender.com",
+            "X-Title": "QuizForge AI",
+        },
+        data=json.dumps({
+            "model": "deepseek/deepseek-r1-0528-qwen3-8b:free",
+            "messages": [{"role": "user", "content": prompt}]
         })
-
-    return UserResponse(
-        user_id=user_id,
-        quiz_id=1,
-        answers=answers,
-        time_taken=time_taken
     )
 
+    if response.status_code != 200:
+        raise HTTPException(status_code=500, detail=f"LLM Error: {response.text}")
 
-# ========================================
-# 5. Leaderboard
-# ========================================
-@app.get("/leaderboard", tags=["Leaderboard"])
-async def get_leaderboard():
-    """
-    Return leaderboard sorted by score and time taken.
-    """
-    sorted_leaderboard = sorted(user_results, key=lambda x: (-x['score'], x['time_taken']))
-    return sorted_leaderboard
+    raw_output = response.json()["choices"][0]["message"]["content"]
+    match = re.search(r"\[\s*{.*}\s*]", raw_output, re.DOTALL)
+    if not match:
+        raise HTTPException(status_code=500, detail=f"Invalid response: {raw_output}")
+
+    try:
+        parsed = json.loads(match.group(0))
+    except json.JSONDecodeError as e:
+        raise HTTPException(status_code=500, detail=f"JSON error: {str(e)}")
+
+    session = get_session()
+    questions = []
+    for q in parsed:
+        question_obj = QuestionModel(
+            user_id=user_id,
+            question=q['question'],
+            options=json.dumps(q['options']),
+            correct_index=q['correct_option']
+        )
+        session.add(question_obj)
+        questions.append(Question(
+            question=q['question'],
+            options=q['options'],
+            correct_index=q['correct_option']
+        ))
+    session.commit()
+
+    return Quiz(title=pdf_file.filename.replace(".pdf", ""), questions=questions)
+
+@app.get("/get_quiz", response_model=List[Question])
+def get_quiz(user_id: str):
+    session = get_session()
+    results = session.exec(select(QuestionModel).where(QuestionModel.user_id == user_id)).all()
+    return [
+        Question(
+            question=q.question,
+            options=json.loads(q.options),
+            correct_index=q.correct_index
+        ) for q in results
+    ]
+
+@app.post("/submit_answers", response_model=UserResponse)
+def submit_answers(user_id: str = Form(...), answers: str = Form(...)):
+    session = get_session()
+    try:
+        answer_map = json.loads(answers)
+    except:
+        raise HTTPException(status_code=400, detail="Invalid answers format")
+
+    results = session.exec(select(QuestionModel).where(QuestionModel.user_id == user_id)).all()
+    score = 0
+    for i, ans in answer_map.items():
+        i = int(i)
+        q = results[i]
+        correct_letter = chr(65 + q.correct_index)
+        if ans.upper() == correct_letter:
+            score += 1
+
+    new_result = QuizResult(
+        user_id=user_id,
+        quiz_name=f"Quiz-{datetime.now().strftime('%Y%m%d%H%M%S')}",
+        score=score,
+        total=len(results),
+        timestamp=datetime.now().isoformat()
+    )
+    session.add(new_result)
+    session.commit()
+
+    return UserResponse(user_id=user_id, quiz_id=1, answers=answer_map, time_taken=0)
+
+@app.get("/leaderboard")
+def leaderboard():
+    session = get_session()
+    from sqlmodel import func
+    query = (
+        session.query(
+            QuizResult.user_id,
+            func.sum(QuizResult.score).label("total_score")
+        )
+        .group_by(QuizResult.user_id)
+        .order_by(func.sum(QuizResult.score).desc())
+        .all()
+    )
+
+    results = []
+    for user_id, total_score in query:
+        user = session.exec(select(User).where(User.user_id == user_id)).first()
+        results.append({
+            "username": user.username if user else "Unknown",
+            "user_id": user_id,
+            "total_score": total_score
+        })
+    return results

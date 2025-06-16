@@ -1,26 +1,17 @@
-from pydantic import BaseModel
-from typing import List
-from ai_code.question import Question
-from openai import OpenAI
-import os
+import requests
+import json
 import re
 import random
-from dotenv import load_dotenv
-import json
-# Load environment variables from .env file
+from typing import List
+from pydantic import BaseModel
+from ai_code.question import Question
 
+# Define your OpenRouter API key directly (not secure for production!)
+OPENROUTER_API_KEY = "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"
 
-# Initialize OpenRouter client
-client = OpenAI(
-    base_url="https://openrouter.ai/api/v1",
-    api_key="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",
-)
-print("API Key",client.api_key)
 class Quiz(BaseModel):
     title: str
     questions: List[Question]
-
-import json
 
 def generate_mcq_questions(text: str, num_questions: int = 5) -> List[Question]:
     prompt = f"""
@@ -28,7 +19,7 @@ You are an expert quiz creator.
 
 Generate {num_questions} multiple-choice questions from the following study material.
 
-Output strictly in JSON format:format your answer strictly as valid JSON
+Output strictly in JSON format: format your answer strictly as valid JSON
 {{
   "questions": [
     {{
@@ -41,7 +32,6 @@ Output strictly in JSON format:format your answer strictly as valid JSON
         "B) ...",
         "C) ...",
         "D) ..."
-        
       ]
     }}
   ]
@@ -52,25 +42,44 @@ Study Material:
 """
 
     try:
-        response = client.chat.completions.create(
-            model="deepseek/deepseek-r1-0528-qwen3-8b:free",
-            messages=[{"role": "user", "content": prompt}],
-            extra_headers={
-                "HTTP-Referer": "https://quizforge-ai.onrender.com",
-                "X-Title": "QuizForge AI"
-            }
+        response = requests.post(
+            url="https://openrouter.ai/api/v1/chat/completions",
+            headers={
+                "Authorization": f"Bearer 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",
+                "Content-Type": "application/json",
+                "HTTP-Referer": "https://quizforge-ai.onrender.com",  # Optional for usage tracking
+                "X-Title": "QuizForge AI"  # Optional for model usage attribution
+            },
+            data=json.dumps({
+                "model": "deepseek/deepseek-r1-0528-qwen3-8b:free",
+                "messages": [
+                    {
+                        "role": "user",
+                        "content": prompt
+                    }
+                ]
+            })
         )
-        content = response.choices[0].message.content.strip()
+
+        if response.status_code != 200:
+            raise ValueError(f"OpenRouter API error: {response.status_code} - {response.text}")
+
+        content = response.json()["choices"][0]["message"]["content"].strip()
         print("=== RAW LLM OUTPUT ===")
         print(content)
 
-        # Parse JSON
+        # Clean JSON if it's wrapped in backticks
+        match = re.search(r"```(?:json)?\s*(.*?)```", content, re.DOTALL)
+        if match:
+            content = match.group(1).strip()
+
         response_json = json.loads(content)
         return parse_questions(response_json["questions"])
 
     except Exception as e:
         print("Error during question generation:", str(e))
         raise ValueError("LLM error or bad JSON response.") from e
+
 
 def parse_questions(json_questions: List[dict]) -> List[Question]:
     questions = []
