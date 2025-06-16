@@ -8,3 +8,6 @@ PyMuPDF
 python-dotenv
 python-multipart
 replicate
+pydantic[email]
+sqlmodel
+passlib[bcrypt]
