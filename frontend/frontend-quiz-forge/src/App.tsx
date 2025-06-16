@@ -1,20 +1,53 @@
-import { BrowserRouter, Route, Routes } from 'react-router-dom';
-import Home from './pages/Home';
-import QuizPage from './pages/QuizPage';
-import ResultPage from './pages/ResultPage';
-import NavBar from './components/NavBar';
+import React from "react";
+import { Routes, Route, Navigate, useNavigate } from "react-router-dom";
+import Login from "./components/auth/Login";
+import Signup from "./components/auth/Signup";
+import UploadForm from "./components/UploadForm";
+import QuizPage from "./components/QuizPage";
+import Leaderboard from "./components/Leaderboard";
+import { getUserId } from "./utils/auth";
 
-function App() {
+function Home() {
+  const [step, setStep] = React.useState<"upload" | "quiz" | "leaderboard">("upload");
+  const [userId, setUserId] = React.useState(getUserId() || "");
+
   return (
-    <BrowserRouter>
-      <NavBar />
-      <Routes>
-        <Route path="/" element={<Home />} />
-        <Route path="/quiz/:userId" element={<QuizPage />} />
-        <Route path="/result/:userId" element={<ResultPage />} />
-      </Routes>
-    </BrowserRouter>
+    <div className="min-h-screen bg-gray-100 p-4">
+      {step === "upload" && (
+        <UploadForm
+          onGenerated={() => {
+            setStep("quiz");
+          }}
+        />
+      )}
+      {step === "quiz" && (
+        <QuizPage userId={userId} onSubmitted={() => setStep("leaderboard")} />
+      )}
+      {step === "leaderboard" && <Leaderboard />}
+    </div>
   );
 }
 
-export default App;
+function ProtectedRoute({ children }: { children: React.ReactNode }) {
+  const userId = getUserId();
+  return userId ? children : <Navigate to="/login" />;
+}
+
+export default function App() {
+  return (
+    <Routes>
+      <Route path="/" element={<Navigate to="/login" />} />
+      <Route path="/login" element={<Login />} />
+      <Route path="/signup" element={<Signup />} />
+      <Route
+        path="/home"
+        element={
+          <ProtectedRoute>
+            <Home />
+          </ProtectedRoute>
+        }
+      />
+      <Route path="*" element={<Navigate to="/login" />} />
+    </Routes>
+  );
+}
