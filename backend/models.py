@@ -1,9 +1,8 @@
-# backend/models.py
-
 from sqlmodel import SQLModel, Field, Relationship
 from typing import Optional, List
 from datetime import datetime, timezone
 import uuid
+from pydantic import BaseModel, EmailStr
 
 # Helper for timezone-aware UTC default
 def utc_now():
@@ -36,8 +35,7 @@ class Quiz(SQLModel, table=True):
     creator_id: Optional[int] = Field(default=None, foreign_key="user.id")
     created_at: datetime = Field(default_factory=utc_now)
     difficulty: str = Field(default="medium")
-    duration_minutes: Optional[int] = Field(default=None)
-
+    duration_minutes: Optional[int] = Field(default=None)  # AI-generated time
 
     # Relationships
     creator: Optional[User] = Relationship(back_populates="quizzes_created")
@@ -50,6 +48,7 @@ class Quiz(SQLModel, table=True):
 class Question(SQLModel, table=True):
     id: Optional[int] = Field(default=None, primary_key=True)
     quiz_id: Optional[int] = Field(default=None, foreign_key="quiz.id")
+    question_id: Optional[int]  # Custom: manually assign starting from 0
     question_text: str
     option_a: str
     option_b: str
@@ -114,8 +113,6 @@ class Badge(SQLModel, table=True):
 # -----------------------------
 # 🔖 Pydantic Schemas
 # -----------------------------
-from pydantic import BaseModel, EmailStr
-
 class UserCreate(BaseModel):
     username: str
     email: EmailStr
@@ -130,12 +127,12 @@ class UserRead(BaseModel):
         orm_mode = True
 
 # -----------------------------
-# ✅ ANSWER MODEL (User's selected answers)
+# ✅ ANSWER MODEL
 # -----------------------------
 class Answer(SQLModel, table=True):
     id: Optional[int] = Field(default=None, primary_key=True)
     user_id: int = Field(foreign_key="user.id")
     quiz_id: int = Field(foreign_key="quiz.id")
     question_id: int = Field(foreign_key="question.id")
-    selected_index: int  # 0, 1, 2, 3
+    selected_index: int
     submitted_at: datetime = Field(default_factory=utc_now)
