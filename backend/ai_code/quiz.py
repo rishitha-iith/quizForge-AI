@@ -1,112 +1,141 @@
-import requests
-import json
-import re
-import random
+# backend/quiz.py
+
+from fastapi import APIRouter, UploadFile, File, Form, HTTPException, Depends
+from sqlmodel import Session, select
+import os, json, re, fitz, requests
+from database import get_session
+from models import Quiz, Question, UserQuiz, User
+from utils import decode_access_token
 from typing import List
 from pydantic import BaseModel
-from ai_code.question import Question
 
-# Define your OpenRouter API key directly (not secure for production!)
-OPENROUTER_API_KEY = "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"
+router = APIRouter()
 
-class Quiz(BaseModel):
-    title: str
-    questions: List[Question]
+class QuestionIn(BaseModel):
+    question: str
+    options: List[str]
+    correct_option: int
 
-def generate_mcq_questions(text: str, num_questions: int = 5) -> List[Question]:
+@router.post("/generate_quiz")
+async def generate_quiz(
+    token: str = Form(...),
+    quiz_name: str = Form(...),
+    num_questions: int = Form(...),
+    num_users: int = Form(...),
+    difficulty: str = Form("medium"),
+    duration_minutes: int = Form(None),
+    file: UploadFile = File(...),
+    session: Session = Depends(get_session)
+):
+    # Decode and verify token
+    payload = decode_access_token(token)
+    if not payload:
+        raise HTTPException(status_code=403, detail="Invalid token.")
+    uuid_sub = payload["sub"]
+
+    user_obj = session.exec(select(User).where(User.user_id == uuid_sub)).first()
+    if not user_obj:
+        raise HTTPException(status_code=404, detail="User not found.")
+    user_pk = user_obj.id
+
+    # Validate PDF
+    if not file.filename.lower().endswith('.pdf'):
+        raise HTTPException(status_code=400, detail="Upload a PDF file.")
+
+    content = await file.read()
+    doc = fitz.open(stream=content, filetype="pdf")
+    text = ''.join(page.get_text() for page in doc)
+
+    # Create prompt for questions
     prompt = f"""
-You are an expert quiz creator.
+You are an educational quiz generation assistant. Based on the text provided, generate {num_questions} multiple-choice questions (MCQs) of **{difficulty}** difficulty level. Each question must:
 
-Generate {num_questions} multiple-choice questions from the following study material.
+- Be relevant to the provided text.
+- Contain 4 answer options labeled A, B, C, and D.
+- Include a `correct_option` field which is an integer (0 for option A, 1 for B, etc.).
+- Be concise and clear (no vague or overly complex questions).
+- Be accurate and factually correct.
+- Return the output as a **pure JSON array** of objects, with each object containing:
+  - `question`: string
+  - `options`: list of 4 strings
+  - `correct_option`: integer (0 to 3)
 
-Output strictly in JSON format: format your answer strictly as valid JSON
-{{
-  "questions": [
-    {{
-      "type": "multiple-choice",
-      "difficulty": "easy",
-      "question": "Your question here",
-      "correctAnswer": "A",
-      "choices": [
-        "A) ...",
-        "B) ...",
-        "C) ...",
-        "D) ..."
-      ]
-    }}
-  ]
-}}
+Do not include explanations or commentary. Only return the JSON array.
 
-Study Material:
+Here is the input text (truncated to the first 3000 characters for brevity):
 {text[:3000]}
 """
 
+
     try:
-        response = requests.post(
-            url="https://openrouter.ai/api/v1/chat/completions",
+        res = requests.post(
+            os.getenv('OPENROUTER_URL'),
             headers={
-                "Authorization": f"Bearer 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",
-                "Content-Type": "application/json",
-                "HTTP-Referer": "https://quizforge-ai.onrender.com",  # Optional for usage tracking
-                "X-Title": "QuizForge AI"  # Optional for model usage attribution
+                'Authorization': f"Bearer {os.getenv('OPENROUTER_API_KEY')}",
+                'Content-Type': 'application/json'
             },
-            data=json.dumps({
-                "model": "deepseek/deepseek-r1-0528-qwen3-8b:free",
-                "messages": [
-                    {
-                        "role": "user",
-                        "content": prompt
-                    }
-                ]
-            })
+            json={ 'model': 'deepseek/deepseek-r1-0528-qwen3-8b:free', 'messages': [{'role':'user','content':prompt}] }
         )
-
-        if response.status_code != 200:
-            raise ValueError(f"OpenRouter API error: {response.status_code} - {response.text}")
-
-        content = response.json()["choices"][0]["message"]["content"].strip()
-        print("=== RAW LLM OUTPUT ===")
-        print(content)
-
-        # Clean JSON if it's wrapped in backticks
-        match = re.search(r"```(?:json)?\s*(.*?)```", content, re.DOTALL)
-        if match:
-            content = match.group(1).strip()
-
-        response_json = json.loads(content)
-        return parse_questions(response_json["questions"])
-
+        res.raise_for_status()
+        raw = res.json()['choices'][0]['message']['content']
+        match = re.search(r"\[.*\]", raw, re.DOTALL)
+        if not match:
+            raise ValueError("Unexpected LLM response format")
+        questions_data = json.loads(match.group(0))
     except Exception as e:
-        print("Error during question generation:", str(e))
-        raise ValueError("LLM error or bad JSON response.") from e
+        raise HTTPException(status_code=500, detail=f"LLM processing failed: {e}")
 
+    # 🧠 AI-Suggested Duration (if user didn't provide)
+    if duration_minutes is None:
+        duration_prompt = f"""Suggest a reasonable quiz time in minutes for a quiz with {len(questions_data)} questions at {difficulty} difficulty.
+Only return an integer."""
+        try:
+            res2 = requests.post(
+                os.getenv('OPENROUTER_URL'),
+                headers={
+                    'Authorization': f"Bearer {os.getenv('OPENROUTER_API_KEY')}",
+                    'Content-Type': 'application/json'
+                },
+                json={ 'model': 'deepseek/deepseek-r1-0528-qwen3-8b:free', 'messages': [{'role':'user','content':duration_prompt}] }
+            )
+            res2.raise_for_status()
+            suggested_time = int(re.search(r"\d+", res2.json()['choices'][0]['message']['content']).group())
+            duration_minutes = suggested_time
+        except Exception as e:
+            duration_minutes = 10  # fallback default
 
-def parse_questions(json_questions: List[dict]) -> List[Question]:
-    questions = []
-    for q in json_questions:
-        question_text = q["question"]
-        options = q["choices"]
-        correct_letter = q["correctAnswer"]
+    # Create quiz
+    quiz = Quiz(
+        quiz_name=quiz_name,
+        max_users=num_users,
+        creator_id=user_pk,
+        difficulty=difficulty,
+        duration_minutes=duration_minutes
+    )
+    session.add(quiz)
+    session.commit()
+    session.refresh(quiz)
 
-        # Convert "A" → index 0, "B" → 1, etc.
-        correct_index = "ABCD".index(correct_letter.upper())
-        questions.append(Question(question=question_text, options=options, correct_index=correct_index))
+    # Save questions
+    for q in questions_data:
+        session.add(Question(
+            quiz_id=quiz.id,
+            question_text=q['question'],
+            option_a=q['options'][0], option_b=q['options'][1],
+            option_c=q['options'][2], option_d=q['options'][3],
+            correct_index=q['correct_option']
+        ))
+    session.commit()
 
-    return questions
+    # Add creator to participants
+    session.add(UserQuiz(user_id=user_pk, quiz_id=quiz.id))
+    session.commit()
 
-
-def shuffle_questions_for_user(questions: List[Question]) -> List[Question]:
-    """
-    Shuffle questions and their options for a user session.
-    """
-    q_copy = [q.model_copy() for q in questions]
-    random.shuffle(q_copy)
-
-    for q in q_copy:
-        original_options = q.options.copy()
-        correct_answer = original_options[q.correct_index]
-        random.shuffle(original_options)
-        q.options = original_options
-        q.correct_index = original_options.index(correct_answer)
-
-    return q_copy
+    return {
+        'status': 'success',
+        'quiz_id': quiz.quiz_id,
+        'quiz_name': quiz.quiz_name,
+        'duration_minutes': quiz.duration_minutes,
+        'difficulty': quiz.difficulty,
+        'message': f"Created {len(questions_data)} questions"
+    }
