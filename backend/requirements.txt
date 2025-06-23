@@ -11,3 +11,8 @@ replicate
 pydantic[email]
 sqlmodel
 passlib[bcrypt]
+psycopg2-binary
+python-dotenv
+python-jose
+requests
+alembic
