@@ -44,7 +44,7 @@ def get_explanations(quiz_name: str, user_id: str, session: Session = Depends(ge
             res = requests.post(
                 "https://openrouter.ai/api/v1/chat/completions",
                 headers={
-                    "Authorization": f"Bearer {os.getenv('OPENROUTER_API_KEY')}",
+                    "Authorization": f"Bearer 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",
                     "Content-Type": "application/json"
                 },
                 json={
