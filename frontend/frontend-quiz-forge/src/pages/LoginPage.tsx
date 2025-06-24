@@ -8,13 +8,12 @@ import { Button } from "@/components/ui/button";
 import { FcGoogle } from "react-icons/fc";
 import { Eye, EyeOff } from "lucide-react";
 import { toast } from "sonner";
-import { Loader2, CheckCircle2, AlertCircle, Rocket } from "lucide-react";
 
 export default function LoginPage() {
   const [identifier, setIdentifier] = useState("");
   const [password, setPassword] = useState("");
   const [showPassword, setShowPassword] = useState(false);
-  const { setUserId } = useAuth();
+  const { setUserId, setToken } = useAuth();
   const navigate = useNavigate();
 
    const handleLogin = async (e: React.FormEvent) => {
@@ -37,8 +36,8 @@ export default function LoginPage() {
   try {
     const response = await loginUser(identifier, password);
     setUserId(response.user_id);
-    localStorage.setItem("user_id", response.user_id);
-    localStorage.setItem("token", response.token);
+    setToken(response.token);
+
 
     toast.dismiss(toastId);
     toast.success(
