@@ -68,7 +68,7 @@ Here is the text:
         res = requests.post(
             os.getenv('OPENROUTER_URL'),
             headers={
-                'Authorization': f"Bearer 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",
+                'Authorization': f"Bearer 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",
                 'Content-Type': 'application/json'
             },
             json={'model': 'deepseek/deepseek-r1-0528-qwen3-8b:free', 'messages': [{'role': 'user', 'content': prompt}]}
@@ -89,7 +89,7 @@ Here is the text:
             res2 = requests.post(
                 os.getenv('OPENROUTER_URL'),
                 headers={
-                    'Authorization': f"Bearer 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",
+                    'Authorization': f"Bearer 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",
                     'Content-Type': 'application/json'
                 },
                 json={'model': 'deepseek/deepseek-r1-0528-qwen3-8b:free', 'messages': [{'role': 'user', 'content': time_prompt}]}
