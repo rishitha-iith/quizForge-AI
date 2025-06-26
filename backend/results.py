@@ -39,10 +39,21 @@ def submit_answers(
     if existing_result:
         raise HTTPException(status_code=403, detail="You have already submitted this quiz.")
 
-    # 📥 Parse answer map (key = question_id as str, value = "A"/"B"/"C"/"D")
+    # 🛠 Fix: Parse JSON safely and print debug info
     try:
-        answer_map: Dict[str, str] = json.loads(answers)
-    except Exception:
+        print("Raw answers (type):", type(answers))  # Debug
+        print("Raw answers (value):", answers)       # Debug
+
+        # answer_map: Dict[str, str] = json.loads(answers)
+        if isinstance(answers, str):
+            answer_map = json.loads(answers)
+            if isinstance(answer_map, str):
+                # answers was double encoded: decode again
+                answer_map = json.loads(answer_map)
+        else:
+            raise ValueError("Answers is not a valid JSON string.")
+    except Exception as e:
+        print("Failed to parse answers:", e)
         raise HTTPException(status_code=400, detail="Invalid answers format.")
 
     # ✅ Fetch all questions
@@ -51,7 +62,7 @@ def submit_answers(
     # 🧮 Calculate score
     score = 0
     for q in questions:
-        qid_str = str(q.question_id)  # frontend uses question_id (not DB id)
+        qid_str = str(q.question_id)  # Use question_id from frontend
         if qid_str in answer_map:
             user_ans = answer_map[qid_str].upper()
             correct_ans = ["A", "B", "C", "D"][q.correct_index]
