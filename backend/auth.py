@@ -12,10 +12,6 @@ from models import UserCreate, UserRead  # Pydantic schemas
 
 router = APIRouter()
 
-class SignupRequest(BaseModel):
-    username: str
-    email: EmailStr
-    password: str
 @router.post("/signup", response_model=UserRead, status_code=status.HTTP_201_CREATED)
 def signup(user_in: UserCreate, session: Session = Depends(get_session)):
     # 1. Check if email already exists

@@ -21,8 +21,8 @@ class User(SQLModel, table=True):
     # Relationships
     quizzes_created: List["Quiz"] = Relationship(back_populates="creator")
     responses: List["UserResponse"] = Relationship(back_populates="user")
+    badges: List["UserBadge"] = Relationship(back_populates="user")
     results: List["QuizResult"] = Relationship(back_populates="user")
-    badges: List["Badge"] = Relationship(back_populates="user")
 
 # -----------------------------
 # 🧪 QUIZ MODEL
@@ -31,8 +31,9 @@ class Quiz(SQLModel, table=True):
     id: Optional[int] = Field(default=None, primary_key=True)
     quiz_id: str = Field(default_factory=lambda: str(uuid.uuid4()), unique=True, index=True)
     quiz_name: str
-    max_users: int
-    creator_id: Optional[int] = Field(default=None, foreign_key="user.id")
+    max_users: int #set by user
+    participants_attempted: int = Field(default=0) #backend managed
+    creator_id: Optional[str] = Field(default=None, foreign_key="user.user_id")
     created_at: datetime = Field(default_factory=utc_now)
     difficulty: str = Field(default="medium")
     duration_minutes: Optional[int] = Field(default=None)  # AI-generated time
@@ -47,8 +48,7 @@ class Quiz(SQLModel, table=True):
 # -----------------------------
 class Question(SQLModel, table=True):
     id: Optional[int] = Field(default=None, primary_key=True)
-    quiz_id: Optional[int] = Field(default=None, foreign_key="quiz.id")
-    question_id: Optional[int]  # Custom: manually assign starting from 0
+    quiz_id: str = Field(foreign_key="quiz.quiz_id")  # ✅ Correct
     question_text: str
     option_a: str
     option_b: str
@@ -57,7 +57,6 @@ class Question(SQLModel, table=True):
     correct_index: int
     explanation: Optional[str] = None
     topic: Optional[str] = None
-
     quiz: Optional[Quiz] = Relationship(back_populates="questions")
 
 # -----------------------------
@@ -65,10 +64,9 @@ class Question(SQLModel, table=True):
 # -----------------------------
 class UserQuiz(SQLModel, table=True):
     id: Optional[int] = Field(default=None, primary_key=True)
-    user_id: Optional[int] = Field(default=None, foreign_key="user.id")
-    quiz_id: Optional[int] = Field(default=None, foreign_key="quiz.id")
+    user_id: str = Field(foreign_key="user.user_id")
+    quiz_id: str = Field(foreign_key="quiz.quiz_id")
     started_at: datetime = Field(default_factory=utc_now)
-
     quiz: Optional[Quiz] = Relationship(back_populates="participants")
     user: Optional[User] = Relationship()
 
@@ -77,12 +75,11 @@ class UserQuiz(SQLModel, table=True):
 # -----------------------------
 class UserResponse(SQLModel, table=True):
     id: Optional[int] = Field(default=None, primary_key=True)
-    user_id: Optional[int] = Field(default=None, foreign_key="user.id")
-    question_id: Optional[int] = Field(default=None, foreign_key="question.id")
-    selected_option: int
+    user_id: str = Field(foreign_key="user.user_id")
+    question_id: int = Field(foreign_key="question.id")
+    selected_option: int 
     is_correct: bool
     time_taken: int
-
     user: Optional[User] = Relationship(back_populates="responses")
 
 # -----------------------------
@@ -90,25 +87,14 @@ class UserResponse(SQLModel, table=True):
 # -----------------------------
 class QuizResult(SQLModel, table=True):
     id: Optional[int] = Field(default=None, primary_key=True)
-    user_id: Optional[int] = Field(default=None, foreign_key="user.id")
-    quiz_id: Optional[int] = Field(default=None, foreign_key="quiz.id")
+    user_id: str = Field(foreign_key="user.user_id")
+    quiz_id: str = Field(foreign_key="quiz.quiz_id")
     score: int
     accuracy: float
     time_taken: int
     finished_at: datetime = Field(default_factory=utc_now)
 
     user: Optional[User] = Relationship(back_populates="results")
-
-# -----------------------------
-# 🎖️ BADGE MODEL
-# -----------------------------
-class Badge(SQLModel, table=True):
-    id: Optional[int] = Field(default=None, primary_key=True)
-    user_id: Optional[int] = Field(default=None, foreign_key="user.id")
-    badge_name: str
-    earned_at: datetime = Field(default_factory=utc_now)
-
-    user: Optional[User] = Relationship(back_populates="badges")
 
 # -----------------------------
 # 🔖 Pydantic Schemas
@@ -131,8 +117,19 @@ class UserRead(BaseModel):
 # -----------------------------
 class Answer(SQLModel, table=True):
     id: Optional[int] = Field(default=None, primary_key=True)
-    user_id: int = Field(foreign_key="user.id")
-    quiz_id: int = Field(foreign_key="quiz.id")
+    user_id: str = Field(foreign_key="user.user_id")
+    quiz_id: str = Field(foreign_key="quiz.quiz_id")
     question_id: int = Field(foreign_key="question.id")
     selected_index: int
     submitted_at: datetime = Field(default_factory=utc_now)
+    
+    
+class UserBadge(SQLModel, table=True):
+    id: Optional[int] = Field(default=None, primary_key=True)
+
+    user_id: str = Field(foreign_key="user.user_id")          # ✅ VARCHAR
+    badge_name: str
+    scope: str  # "per_quiz" or "overall"
+    quiz_id: Optional[str] = Field(default=None, foreign_key="quiz.quiz_id")
+    awarded_at: datetime = Field(default_factory=datetime.now)
+    user: Optional["User"] = Relationship(back_populates="badges")
